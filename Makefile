@@ -17,8 +17,8 @@
 LIB=		bsd
 LIB_STATIC=	lib${LIB}.a
 PICFLAG=	-fpic
-CFLAGS+=	-Ibsd -I.
 SRCDIR=		src
+CFLAGS+=	-Ibsd -I${SRCDIR}
 
 .PATH:		${SRCDIR}
 
