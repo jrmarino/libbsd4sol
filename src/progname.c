@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-const char *getprogname () {
+const char *getprogname (void) {
     static const char *progname;
 
     if (progname == NULL) {

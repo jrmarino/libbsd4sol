@@ -7,7 +7,7 @@
 
 void *reallocf(void *ptr, size_t size);
 void *reallocarray(void *ptr, size_t nmemb, size_t size);
-const char *getprogname();
+const char *getprogname(void);
 
 #define	arc4random		sol_arc4random
 #define	arc4random_addrandom	sol_arc4random_addrandom
