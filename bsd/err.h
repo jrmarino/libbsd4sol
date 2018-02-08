@@ -2,6 +2,7 @@
 #define LIBBSD_ERR_H
 
 #include <sys/cdefs.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdarg.h>
