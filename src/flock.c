@@ -1,3 +1,8 @@
+/*
+ * Solaris portability - flock()
+ * https://www.perkin.org.uk/posts/solaris-portability-flock.html
+ */
+
 #define __EXTENSIONS__	1
 #include <errno.h>
 #include <fcntl.h>
