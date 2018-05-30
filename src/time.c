@@ -1,56 +1,109 @@
-/* timegm.c --- Implementation of replacement timegm function.
-
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License as
-   published by the Free Software Foundation; either version 3, or (at
-   your option) any later version.
-
-   This program is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
-   02110-1301, USA.  */
-
-/* Written by Blake Jones. */
+/*
+ * Implementation of replacement timegm function
+ *
+ * Copyright (c) 2018, John R. Marino
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 
 #include <time.h>
+#include <errno.h>
+#include <limits.h>
 #include <sys/time.h>
 
-int
-leapyear (int year)
+/*
+ * The Gregorian reform modified the Julian calendar's scheme of leap years
+ * as follows:
+ *    Every year that is exactly divisible by four is a leap year, except
+ *    for years that are exactly divisible by 100, but these centurial
+ *    years are leap years if they are exactly divisible by 400. For
+ *    example, the years 1700, 1800, and 1900 were not leap years, but the
+ *    years 1600 and 2000 were.
+ * ref: http://aa.usno.navy.mil/faq/docs/calendars.php
+ *
+ * Output: 1 if year is a leapyear, 0 if year is not a leap year
+ */
+static int
+is_leapyear (int year_since_1900)
 {
-    return ((year % 4) == 0 && ((year % 100) != 0 || (year % 400) == 0));
+   int year = year_since_1900 + 1900;
+
+   if (year % 4 == 0) {
+      if (year % 100 == 0) {
+         return (year % 400 == 0);
+      }
+      return (1);
+   }
+   return (0);
+}
+
+static unsigned
+seconds_per_year (int year_since_1900)
+{
+   return (86400 * (is_leapyear(year_since_1900) ? 366 : 365));
 }
 
 /*
- * This is a simple implementation of timegm() which does what is needed
- * by create_output() -- just turns the "struct tm" into a GMT time_t.
- * It does not normalize any of the fields of the "struct tm", nor does
- * it set tm_wday or tm_yday.
+ * This implementation is equivalent to FreeBSD's.
+ * The timegm() function interprets the input structure as representing
+ * Universal Coordinated Time (UTC).
+ *
+ * The original values of the tm_wday and tm_yday components of the
+ * structure are ignored, and the original values of the other components
+ * are not restricted to their normal ranges, and will be normalized if
+ * needed.  For example, October 40 is changed into November 9, a tm_hour of
+ * -1 means 1 hour before midnight, tm_mday of 0 means the day preceding the
+ * current month, and tm_mon of -2 means 2 months before January of tm_year.
+ * The tm_isdst and tm_gmtoff members are forced to zero by timegm().)
  */
+
+#ifndef WRONG
+#define WRONG	(-1)
+#endif
+
 time_t
-timegm (struct tm *tm)
+timegm(struct tm *const tmp)
 {
-    int monthlen[2][12] = {
-        { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },
-        { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },
-    };
-    int year, month, days;
+	const unsigned days_past[2][12] = {
+	  { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 },
+	  { 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335 },
+        };
+	long long int	result = 0;
+	int 		leapyear = is_leapyear(tmp->tm_year);
+	int 		year;
 
-    days = 365 * (tm->tm_year - 70);
-    for (year = 70; year < tm->tm_year; year++) {
-        if (leapyear(1900 + year)) {
-            days++;
-        }
-    }
-    for (month = 0; month < tm->tm_mon; month++) {
-        days += monthlen[leapyear(1900 + year)][month];
-    }
-    days += tm->tm_mday - 1;
+	if (tmp == NULL) {
+		errno = EINVAL;
+		return WRONG;
+	}
+	tmp->tm_isdst = 0;
+	tmp->tm_gmtoff = 0;
 
-    return ((((days * 24) + tm->tm_hour) * 60 + tm->tm_min) * 60 + tm->tm_sec);
+	result += tmp->tm_sec;
+	result += tmp->tm_min * 60;
+	result += tmp->tm_hour * 3600;
+	result += days_past[leapyear][tmp->tm_mon] * 86400;
+	result += (tmp->tm_mday - 1) * 86400;
+	for (year = tmp->tm_year; year < 70; year++)
+		result -= seconds_per_year(year);
+	for (year = 70; year < tmp->tm_year; year++)
+		result += seconds_per_year(year);
+
+	if (sizeof(result) > sizeof(time_t)) {
+		if (result > INT_MAX || result < INT_MIN) {
+			errno = EOVERFLOW;
+			return WRONG;
+		}
+	}
+	return ((time_t) result);
 }
