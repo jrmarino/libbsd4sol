@@ -78,9 +78,16 @@ timegm(struct tm *const tmp)
 	  { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 },
 	  { 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335 },
         };
+	struct tm	normalized = { 0 };
 	long long int	result = 0;
-	int 		leapyear = is_leapyear(tmp->tm_year);
+	long long int	counterres;
+	int		day_counter;
+	int 		leapyear;
 	int 		year;
+	int		space_remains;
+	int		spy;
+	int		full_days;
+	int		index;
 
 	if (tmp == NULL) {
 		errno = EINVAL;
@@ -92,6 +99,19 @@ timegm(struct tm *const tmp)
 	result += tmp->tm_sec;
 	result += tmp->tm_min * 60;
 	result += tmp->tm_hour * 3600;
+
+	/* handle negative month index or greater than 12 */
+	if (tmp->tm_mon > 11) {
+		year = tmp->tm_mon / 12;
+		tmp->tm_mon -= (year * 12);
+		tmp->tm_year += year;
+	} else if (tmp->tm_mon < 0) {
+		year = 1 + (tmp->tm_mon / -12);
+		tmp->tm_mon += (year * 12);
+		tmp->tm_year -= year;
+	}
+
+	leapyear = is_leapyear(tmp->tm_year);
 	result += days_past[leapyear][tmp->tm_mon] * 86400;
 	result += (tmp->tm_mday - 1) * 86400;
 	for (year = tmp->tm_year; year < 70; year++)
@@ -105,5 +125,82 @@ timegm(struct tm *const tmp)
 			return WRONG;
 		}
 	}
+	/* now normalize time structure */
+	counterres = result;
+	space_remains = 1;
+	if (result >= 0) {
+		normalized.tm_year = 70;
+		/* 4 January 1970 was the first positive Sunday */
+		day_counter = 4 + (result / 86400);
+		normalized.tm_wday = day_counter % 7;
+
+		while (space_remains) {
+			spy = seconds_per_year(normalized.tm_year);
+			if (counterres - spy < 0) {
+				space_remains = 0;
+			} else {
+				normalized.tm_year += 1;
+				counterres -= spy;
+			}
+		}
+		leapyear = is_leapyear(normalized.tm_year);
+	} else {
+		/* Date prior to Jan 1, 1970 */
+		normalized.tm_year = 69;
+		/* 28 December 1969 was the first negative Sunday */
+		day_counter = ((result + 1) / -86400) % 7;
+		     if (day_counter == 0) normalized.tm_wday = 3;
+		else if (day_counter == 1) normalized.tm_wday = 2;
+		else if (day_counter == 2) normalized.tm_wday = 1;
+		else if (day_counter == 3) normalized.tm_wday = 0;
+		else if (day_counter == 4) normalized.tm_wday = 6;
+		else if (day_counter == 5) normalized.tm_wday = 5;
+		else                       normalized.tm_wday = 4;
+
+		while (space_remains) {
+			spy = seconds_per_year(normalized.tm_year);
+			if (counterres + spy >= 0) {
+				space_remains = 0;
+			} else {
+				normalized.tm_year -= 1;
+				counterres += spy;
+			}
+		}
+		/* what remains is a partial year.
+		 * 1 = 31 DEC 23:59:59
+		 * convert to positive track by adding full year to counterres
+		 */
+		leapyear = is_leapyear(normalized.tm_year);
+		counterres += seconds_per_year (normalized.tm_year);
+	}
+	for (index = 11; index >= 0; index--) {
+		spy = days_past[leapyear][index] * 86400;
+		if (counterres - spy >= 0) {
+			normalized.tm_mon = index;
+			normalized.tm_yday = days_past[leapyear][index];
+			counterres -= spy;
+			break;
+		}
+	}
+	full_days = (counterres / 86400);
+	normalized.tm_mday = 1 + full_days;
+	normalized.tm_yday += full_days;
+	counterres -= (full_days * 86400);
+
+	normalized.tm_hour = counterres / 3600;
+	counterres -= (normalized.tm_hour * 3600);
+	normalized.tm_min = counterres / 60;
+	counterres -= (normalized.tm_min * 60);
+	normalized.tm_sec = counterres;
+
+	tmp->tm_year = normalized.tm_year;
+	tmp->tm_mon  = normalized.tm_mon;
+	tmp->tm_mday = normalized.tm_mday;
+	tmp->tm_hour = normalized.tm_hour;
+	tmp->tm_min  = normalized.tm_min;
+	tmp->tm_sec  = normalized.tm_sec;
+	tmp->tm_yday = normalized.tm_yday;
+	tmp->tm_wday = normalized.tm_wday;
+
 	return ((time_t) result);
 }
