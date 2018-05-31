@@ -93,8 +93,6 @@ timegm(struct tm *const tmp)
 		errno = EINVAL;
 		return WRONG;
 	}
-	tmp->tm_isdst = 0;
-	tmp->tm_gmtoff = 0;
 
 	result += tmp->tm_sec;
 	result += tmp->tm_min * 60;
@@ -125,6 +123,7 @@ timegm(struct tm *const tmp)
 			return WRONG;
 		}
 	}
+
 	/* now normalize time structure */
 	counterres = result;
 	space_remains = 1;
@@ -173,6 +172,7 @@ timegm(struct tm *const tmp)
 		leapyear = is_leapyear(normalized.tm_year);
 		counterres += seconds_per_year (normalized.tm_year);
 	}
+
 	for (index = 11; index >= 0; index--) {
 		spy = days_past[leapyear][index] * 86400;
 		if (counterres - spy >= 0) {
@@ -193,14 +193,16 @@ timegm(struct tm *const tmp)
 	counterres -= (normalized.tm_min * 60);
 	normalized.tm_sec = counterres;
 
-	tmp->tm_year = normalized.tm_year;
-	tmp->tm_mon  = normalized.tm_mon;
-	tmp->tm_mday = normalized.tm_mday;
-	tmp->tm_hour = normalized.tm_hour;
-	tmp->tm_min  = normalized.tm_min;
-	tmp->tm_sec  = normalized.tm_sec;
-	tmp->tm_yday = normalized.tm_yday;
-	tmp->tm_wday = normalized.tm_wday;
+	tmp->tm_year   = normalized.tm_year;
+	tmp->tm_mon    = normalized.tm_mon;
+	tmp->tm_mday   = normalized.tm_mday;
+	tmp->tm_hour   = normalized.tm_hour;
+	tmp->tm_min    = normalized.tm_min;
+	tmp->tm_sec    = normalized.tm_sec;
+	tmp->tm_yday   = normalized.tm_yday;
+	tmp->tm_wday   = normalized.tm_wday;
+	tmp->tm_isdst  = 0;
+	tmp->tm_gmtoff = 0;
 
 	return ((time_t) result);
 }
