@@ -202,7 +202,9 @@ timegm(struct tm *const tmp)
 	tmp->tm_yday   = normalized.tm_yday;
 	tmp->tm_wday   = normalized.tm_wday;
 	tmp->tm_isdst  = 0;
+/* solaris doesn't have tm_gmtoff member in struct tm
 	tmp->tm_gmtoff = 0;
+*/
 
 	return ((time_t) result);
 }
