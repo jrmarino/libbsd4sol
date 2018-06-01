@@ -122,6 +122,8 @@ typedef struct es__stream *estream_t;
 estream_t es_fopencookie (void *ES__RESTRICT cookie,
 			  const char *ES__RESTRICT mode,
 			  es_cookie_io_functions_t functions);
+estream_t es_fopen (const char *ES__RESTRICT path,
+		    const char *ES__RESTRICT mode);
 
 int es_fclose (estream_t stream);
 int es_fseeko (estream_t stream, off_t offset, int whence);

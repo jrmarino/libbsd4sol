@@ -55,6 +55,7 @@
 #include <estream.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <assert.h>
@@ -103,6 +104,7 @@ dummy_mutex_call_int (estream_mutex_t mutex)
 #endif
 #define _set_errno(a) do { errno = (a); } while (0)
 #define ES_DEFAULT_OPEN_MODE (S_IRUSR | S_IWUSR)
+#define IS_INVALID_FD(a) ((a) == -1)
 
 /* A private cookie function to implement an internal IOCTL
    service.  */
@@ -558,6 +560,157 @@ static es_cookie_io_functions_t estream_functions_mem =
     es_func_mem_destroy
   };
 
+/* Implementation of fd I/O.  */
+
+/* Cookie for fd objects.  */
+typedef struct estream_cookie_fd
+{
+  int fd;        /* The file descriptor we are using for actual output.  */
+  int no_close;  /* If set we won't close the file descriptor.  */
+} *estream_cookie_fd_t;
+
+/* Read function for fd objects.  */
+static ssize_t
+es_func_fd_read (void *cookie, void *buffer, size_t size)
+
+{
+  estream_cookie_fd_t file_cookie = cookie;
+  ssize_t bytes_read;
+
+  if (IS_INVALID_FD (file_cookie->fd))
+    {
+      ESTREAM_SYS_YIELD ();
+      bytes_read = 0;
+    }
+  else
+    {
+      do
+        bytes_read = ESTREAM_SYS_READ (file_cookie->fd, buffer, size);
+      while (bytes_read == -1 && errno == EINTR);
+    }
+
+  return bytes_read;
+}
+
+/* Write function for fd objects.  */
+static ssize_t
+es_func_fd_write (void *cookie, const void *buffer, size_t size)
+{
+  estream_cookie_fd_t file_cookie = cookie;
+  ssize_t bytes_written;
+
+  if (IS_INVALID_FD (file_cookie->fd))
+    {
+      ESTREAM_SYS_YIELD ();
+      bytes_written = size; /* Yeah:  Success writing to the bit bucket.  */
+    }
+  else
+    {
+      do
+        bytes_written = ESTREAM_SYS_WRITE (file_cookie->fd, buffer, size);
+      while (bytes_written == -1 && errno == EINTR);
+    }
+
+  return bytes_written;
+}
+
+/* Seek function for fd objects.  */
+static int
+es_func_fd_seek (void *cookie, off_t *offset, int whence)
+{
+  estream_cookie_fd_t file_cookie = cookie;
+  off_t offset_new;
+  int err;
+
+  if (IS_INVALID_FD (file_cookie->fd))
+    {
+      _set_errno (ESPIPE);
+      err = -1;
+    }
+  else
+    {
+      offset_new = lseek (file_cookie->fd, *offset, whence);
+      if (offset_new == -1)
+        err = -1;
+      else
+        {
+          *offset = offset_new;
+          err = 0;
+        }
+    }
+
+  return err;
+}
+
+/* Destroy function for fd objects.  */
+static int
+es_func_fd_destroy (void *cookie)
+{
+  estream_cookie_fd_t fd_cookie = cookie;
+  int err;
+
+  if (fd_cookie)
+    {
+      if (IS_INVALID_FD (fd_cookie->fd))
+        err = 0;
+      else
+        err = fd_cookie->no_close? 0 : close (fd_cookie->fd);
+      mem_free (fd_cookie);
+    }
+  else
+    err = 0;
+
+  return err;
+}
+
+static es_cookie_io_functions_t estream_functions_fd =
+  {
+    es_func_fd_read,
+    es_func_fd_write,
+    es_func_fd_seek,
+    es_func_fd_destroy
+  };
+
+/* Implementation of file I/O.  */
+
+/* Create function for file objects.  */
+static int
+es_func_file_create (void **cookie, int *filedes,
+		     const char *path, unsigned int modeflags)
+{
+  estream_cookie_fd_t file_cookie;
+  int err;
+  int fd;
+
+  err = 0;
+  fd = -1;
+
+  file_cookie = mem_alloc (sizeof (*file_cookie));
+  if (! file_cookie)
+    {
+      err = -1;
+      goto out;
+    }
+
+  fd = open (path, modeflags, ES_DEFAULT_OPEN_MODE);
+  if (fd == -1)
+    {
+      err = -1;
+      goto out;
+    }
+
+  file_cookie->fd = fd;
+  file_cookie->no_close = 0;
+  *cookie = file_cookie;
+  *filedes = fd;
+
+ out:
+
+  if (err)
+    mem_free (file_cookie);
+
+  return err;
+}
 
 static int
 es_convert_mode (const char *mode, unsigned int *modeflags)
@@ -1593,4 +1746,68 @@ es_fseeko (estream_t stream, off_t offset, int whence)
   ESTREAM_UNLOCK (stream);
 
   return err;
+}
+
+static void
+fname_set_internal (estream_t stream, const char *fname, int quote)
+{
+  if (stream->intern->printable_fname
+      && !stream->intern->printable_fname_inuse)
+    {
+      mem_free (stream->intern->printable_fname);
+      stream->intern->printable_fname = NULL;
+    }
+  if (stream->intern->printable_fname)
+    return; /* Can't change because it is in use.  */
+
+  if (*fname != '[')
+    quote = 0;
+  else
+    quote = !!quote;
+
+  stream->intern->printable_fname = mem_alloc (strlen (fname) + quote + 1);
+  if (fname)
+    {
+      if (quote)
+        stream->intern->printable_fname[0] = '\\';
+      strcpy (stream->intern->printable_fname+quote, fname);
+    }
+}
+
+estream_t
+es_fopen (const char *ES__RESTRICT path, const char *ES__RESTRICT mode)
+{
+  unsigned int modeflags;
+  int create_called;
+  estream_t stream;
+  void *cookie;
+  int err;
+  int fd;
+
+  stream = NULL;
+  cookie = NULL;
+  create_called = 0;
+
+  err = es_convert_mode (mode, &modeflags);
+  if (err)
+    goto out;
+
+  err = es_func_file_create (&cookie, &fd, path, modeflags);
+  if (err)
+    goto out;
+
+  create_called = 1;
+  err = es_create (&stream, cookie, fd, estream_functions_fd, modeflags, 0);
+  if (err)
+    goto out;
+
+  if (stream && path)
+    fname_set_internal (stream, path, 1);
+
+ out:
+
+  if (err && create_called)
+    (*estream_functions_fd.func_close) (cookie);
+
+  return stream;
 }
