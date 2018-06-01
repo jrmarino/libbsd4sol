@@ -32,7 +32,8 @@ SRCS=		err.c stringlist.c strsep.c bzero.c reallocarray.c vis.c \
 		strndup.c strmode.c flock.c getline.c time.c fchmodat.c \
 		arc4random.c arc4random_uniform.c explicit_bzero.c \
 		strcasestr.c getentropy_solaris.c sha512c.c reallocf.c \
-		strtonum.c fgetln.c asprintf.c vasprintf.c strnlen.c
+		strtonum.c fgetln.c asprintf.c vasprintf.c strnlen.c \
+		estream.c
 
 # libexec sources
 PREFIX?=	/usr/local
@@ -57,7 +58,7 @@ install:
 	${BSD_INSTALL_DATA} ${LIB_STATIC} ${DESTDIR}${PREFIX}/lib
 	# ln -s ${LIB_SHARED} ${DESTDIR}${PREFIX}/lib/${LIB_LINK}
 .for h in err.h stringlist.h string.h strings.h stdlib.h stdio.h \
-	unistd.h vis.h fcntl.h paths.h \
+	unistd.h vis.h fcntl.h paths.h estream.h \
 	sys/cdefs.h sys/tree.h sys/file.h sys/time.h sys/stat.h \
 	sys/endian.h
 	${BSD_INSTALL_DATA} bsd/$h ${DESTDIR}${PREFIX}/include/bsd/$h
