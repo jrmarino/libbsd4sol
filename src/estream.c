@@ -53,6 +53,7 @@
 
 
 #include <estream.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -1331,6 +1332,26 @@ es_write_fbf (estream_t ES__RESTRICT stream,
   return err;
 }
 
+#ifdef __sun__
+/*
+ * Reverse memchr()
+ * Find the last occurrence of 'c' in the buffer 's' of size 'n'.
+ */
+static void *
+memrchr(const void *s, int c, size_t n)
+{
+        const unsigned char *cp;
+
+        if (n != 0) {
+                cp = (unsigned char *)s + n;
+                do {
+                        if (*(--cp) == (unsigned char)c)
+                                return((void *)cp);
+                } while (--n != 0);
+        }
+        return(NULL);
+}
+#endif
 
 /* Write BYTES_TO_WRITE bytes from BUFFER into STREAM in
    line-buffered-mode, storing the amount of bytes written in
