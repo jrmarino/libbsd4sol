@@ -1582,3 +1582,15 @@ es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr, size_t *ES__RESTRICT n,
 
   return err ? err : (ssize_t)line_n;
 }
+
+int
+es_fseeko (estream_t stream, off_t offset, int whence)
+{
+  int err;
+
+  ESTREAM_LOCK (stream);
+  err = es_seek (stream, offset, whence, NULL);
+  ESTREAM_UNLOCK (stream);
+
+  return err;
+}

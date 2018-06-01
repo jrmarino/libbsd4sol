@@ -124,6 +124,7 @@ estream_t es_fopencookie (void *ES__RESTRICT cookie,
 			  es_cookie_io_functions_t functions);
 
 int es_fclose (estream_t stream);
+int es_fseeko (estream_t stream, off_t offset, int whence);
 ssize_t es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr,
 		    size_t *ES__RESTRICT n,
 		    estream_t stream);
