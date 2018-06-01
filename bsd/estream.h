@@ -124,11 +124,20 @@ estream_t es_fopencookie (void *ES__RESTRICT cookie,
 			  es_cookie_io_functions_t functions);
 estream_t es_fopen (const char *ES__RESTRICT path,
 		    const char *ES__RESTRICT mode);
+estream_t _es_get_std_stream (int fd);
+
+#define es_stdin  _es_get_std_stream (0)
+#define es_stdout _es_get_std_stream (1)
+#define es_stderr _es_get_std_stream (2)
 
 int es_fclose (estream_t stream);
 int es_fseeko (estream_t stream, off_t offset, int whence);
+int es_fileno (estream_t stream);
+int es_ferror (estream_t stream);
 ssize_t es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr,
 		    size_t *ES__RESTRICT n,
 		    estream_t stream);
+int es_setvbuf (estream_t ES__RESTRICT stream,
+		char *ES__RESTRICT buf, int mode, size_t size);
 
 #endif /*ESTREAM_H*/

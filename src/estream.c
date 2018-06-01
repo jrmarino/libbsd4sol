@@ -173,6 +173,10 @@ static estream_mutex_t estream_list_lock;
 #define ESTREAM_LIST_LOCK   ESTREAM_MUTEX_LOCK   (estream_list_lock)
 #define ESTREAM_LIST_UNLOCK ESTREAM_MUTEX_UNLOCK (estream_list_lock)
 
+/* File descriptors registered to be used as the standard file handles. */
+static int custom_std_fds[3];
+static unsigned char custom_std_fds_valid[3];
+
 
 /* Macros.  */
 
@@ -570,6 +574,28 @@ typedef struct estream_cookie_fd
   int no_close;  /* If set we won't close the file descriptor.  */
 } *estream_cookie_fd_t;
 
+/* Create function for fd objects.  */
+static int
+es_func_fd_create (void **cookie, int fd, unsigned int modeflags, int no_close)
+{
+  estream_cookie_fd_t fd_cookie;
+  int err;
+
+  fd_cookie = mem_alloc (sizeof (*fd_cookie));
+  if (! fd_cookie)
+    err = -1;
+  else
+    {
+      (void)modeflags;
+      fd_cookie->fd = fd;
+      fd_cookie->no_close = no_close;
+      *cookie = fd_cookie;
+      err = 0;
+    }
+
+  return err;
+}
+
 /* Read function for fd objects.  */
 static ssize_t
 es_func_fd_read (void *cookie, void *buffer, size_t size)
@@ -671,6 +697,139 @@ static es_cookie_io_functions_t estream_functions_fd =
     es_func_fd_seek,
     es_func_fd_destroy
   };
+
+
+/* Implementation of FILE* I/O.  */
+
+/* Cookie for fp objects.  */
+typedef struct estream_cookie_fp
+{
+  FILE *fp;      /* The file pointer we are using for actual output.  */
+  int no_close;  /* If set we won't close the file pointer.  */
+} *estream_cookie_fp_t;
+
+/* Create function for fd objects.  */
+static int
+es_func_fp_create (void **cookie, FILE *fp,
+                   unsigned int modeflags, int no_close)
+{
+  estream_cookie_fp_t fp_cookie;
+  int err;
+
+  fp_cookie = mem_alloc (sizeof *fp_cookie);
+  if (!fp_cookie)
+    err = -1;
+  else
+    {
+      (void)modeflags;
+      fp_cookie->fp = fp;
+      fp_cookie->no_close = no_close;
+      *cookie = fp_cookie;
+      err = 0;
+    }
+
+  return err;
+}
+
+/* Read function for FILE* objects.  */
+static ssize_t
+es_func_fp_read (void *cookie, void *buffer, size_t size)
+
+{
+  estream_cookie_fp_t file_cookie = cookie;
+  ssize_t bytes_read;
+
+  if (file_cookie->fp)
+    bytes_read = fread (buffer, 1, size, file_cookie->fp);
+  else
+    bytes_read = 0;
+  if (!bytes_read && ferror (file_cookie->fp))
+    return -1;
+  return bytes_read;
+}
+
+/* Write function for FILE* objects.  */
+static ssize_t
+es_func_fp_write (void *cookie, const void *buffer, size_t size)
+
+{
+  estream_cookie_fp_t file_cookie = cookie;
+  size_t bytes_written;
+
+
+  if (file_cookie->fp)
+    bytes_written = fwrite (buffer, 1, size, file_cookie->fp);
+  else
+    bytes_written = size; /* Successfully written to the bit bucket.  */
+  if (bytes_written != size)
+    return -1;
+  return bytes_written;
+}
+
+/* Seek function for FILE* objects.  */
+static int
+es_func_fp_seek (void *cookie, off_t *offset, int whence)
+{
+  estream_cookie_fp_t file_cookie = cookie;
+  long int offset_new;
+
+  if (!file_cookie->fp)
+    {
+      _set_errno (ESPIPE);
+      return -1;
+    }
+
+  if ( fseek (file_cookie->fp, (long int)*offset, whence) )
+    {
+      /* fprintf (stderr, "\nfseek failed: errno=%d (%s)\n", */
+      /*          errno,strerror (errno)); */
+      return -1;
+    }
+
+  offset_new = ftell (file_cookie->fp);
+  if (offset_new == -1)
+    {
+      /* fprintf (stderr, "\nftell failed: errno=%d (%s)\n",  */
+      /*          errno,strerror (errno)); */
+      return -1;
+    }
+  *offset = offset_new;
+  return 0;
+}
+
+/* Destroy function for FILE* objects.  */
+static int
+es_func_fp_destroy (void *cookie)
+{
+  estream_cookie_fp_t fp_cookie = cookie;
+  int err;
+
+  if (fp_cookie)
+    {
+      if (fp_cookie->fp)
+        {
+          fflush (fp_cookie->fp);
+          err = fp_cookie->no_close? 0 : fclose (fp_cookie->fp);
+        }
+      else
+        err = 0;
+      mem_free (fp_cookie);
+    }
+  else
+    err = 0;
+
+  return err;
+}
+
+
+static es_cookie_io_functions_t estream_functions_fp =
+  {
+    es_func_fp_read,
+    es_func_fp_write,
+    es_func_fp_seek,
+    es_func_fp_destroy
+  };
+
 
 /* Implementation of file I/O.  */
 
@@ -1577,6 +1736,12 @@ es_skip (estream_t stream, size_t size)
 }
 
 static int
+es_get_fd (estream_t stream)
+{
+  return stream->intern->fd;
+}
+
+static int
 doreadline (estream_t ES__RESTRICT stream, size_t max_length,
             char *ES__RESTRICT *ES__RESTRICT line,
             size_t *ES__RESTRICT line_length)
@@ -1757,6 +1922,124 @@ es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr, size_t *ES__RESTRICT n,
   return err ? err : (ssize_t)line_n;
 }
 
+static void
+es_set_indicators (estream_t stream, int ind_err, int ind_eof)
+{
+  if (ind_err != -1)
+    stream->intern->indicators.err = ind_err ? 1 : 0;
+  if (ind_eof != -1)
+    stream->intern->indicators.eof = ind_eof ? 1 : 0;
+}
+
+static int
+es_get_indicator (estream_t stream, int ind_err, int ind_eof)
+{
+  int ret = 0;
+
+  if (ind_err)
+    ret = stream->intern->indicators.err;
+  else if (ind_eof)
+    ret = stream->intern->indicators.eof;
+
+  return ret;
+}
+
+static int
+es_set_buffering (estream_t ES__RESTRICT stream,
+		  char *ES__RESTRICT buffer, int mode, size_t size)
+{
+  int err;
+
+  /* Flush or empty buffer depending on mode.  */
+  if (stream->flags.writing)
+    {
+      err = es_flush (stream);
+      if (err)
+	goto out;
+    }
+  else
+    es_empty (stream);
+
+  es_set_indicators (stream, -1, 0);
+
+  /* Free old buffer in case that was allocated by this function.  */
+  if (stream->intern->deallocate_buffer)
+    {
+      stream->intern->deallocate_buffer = 0;
+      mem_free (stream->buffer);
+      stream->buffer = NULL;
+    }
+
+  if (mode == _IONBF)
+    stream->buffer_size = 0;
+  else
+    {
+      void *buffer_new;
+
+      if (buffer)
+	buffer_new = buffer;
+      else
+	{
+          if (!size)
+            size = BUFSIZ;
+	  buffer_new = mem_alloc (size);
+	  if (! buffer_new)
+	    {
+	      err = -1;
+	      goto out;
+	    }
+	}
+
+      stream->buffer = buffer_new;
+      stream->buffer_size = size;
+      if (! buffer)
+	stream->intern->deallocate_buffer = 1;
+    }
+  stream->intern->strategy = mode;
+  err = 0;
+
+ out:
+
+  return err;
+}
+
+int
+es_fileno_unlocked (estream_t stream)
+{
+  return es_get_fd (stream);
+}
+
+int
+es_fileno (estream_t stream)
+{
+  int ret;
+
+  ESTREAM_LOCK (stream);
+  ret = es_fileno_unlocked (stream);
+  ESTREAM_UNLOCK (stream);
+
+  return ret;
+}
+
+int
+es_ferror_unlocked (estream_t stream)
+{
+  return es_get_indicator (stream, 1, 0);
+}
+
+
+int
+es_ferror (estream_t stream)
+{
+  int ret;
+
+  ESTREAM_LOCK (stream);
+  ret = es_ferror_unlocked (stream);
+  ESTREAM_UNLOCK (stream);
+
+  return ret;
+}
+
 int
 es_fseeko (estream_t stream, off_t offset, int whence)
 {
@@ -1831,4 +2114,162 @@ es_fopen (const char *ES__RESTRICT path, const char *ES__RESTRICT mode)
     (*estream_functions_fd.func_close) (cookie);
 
   return stream;
+}
+
+estream_t
+do_fdopen (int filedes, const char *mode, int no_close, int with_locked_list)
+{
+  unsigned int modeflags;
+  int create_called;
+  estream_t stream;
+  void *cookie;
+  int err;
+
+  stream = NULL;
+  cookie = NULL;
+  create_called = 0;
+
+  err = es_convert_mode (mode, &modeflags);
+  if (err)
+    goto out;
+
+  err = es_func_fd_create (&cookie, filedes, modeflags, no_close);
+  if (err)
+    goto out;
+
+  create_called = 1;
+  err = es_create (&stream, cookie, filedes, estream_functions_fd,
+                   modeflags, with_locked_list);
+
+ out:
+
+  if (err && create_called)
+    (*estream_functions_fd.func_close) (cookie);
+
+  return stream;
+}
+
+estream_t
+es_fdopen (int filedes, const char *mode)
+{
+  return do_fdopen (filedes, mode, 0, 0);
+}
+
+estream_t
+do_fpopen (FILE *fp, const char *mode, int no_close, int with_locked_list)
+{
+  unsigned int modeflags;
+  int create_called;
+  estream_t stream;
+  void *cookie;
+  int err;
+
+  stream = NULL;
+  cookie = NULL;
+  create_called = 0;
+
+  err = es_convert_mode (mode, &modeflags);
+  if (err)
+    goto out;
+
+  if (fp)
+    fflush (fp);
+  err = es_func_fp_create (&cookie, fp, modeflags, no_close);
+  if (err)
+    goto out;
+
+  create_called = 1;
+  err = es_create (&stream, cookie, fp? fileno (fp):-1, estream_functions_fp,
+                   modeflags, with_locked_list);
+
+ out:
+
+  if (err && create_called)
+    (*estream_functions_fp.func_close) (cookie);
+
+  return stream;
+}
+
+/* Return the stream used for stdin, stdout or stderr.  */
+estream_t
+_es_get_std_stream (int fd)
+{
+  estream_list_t list_obj;
+  estream_t stream = NULL;
+
+  fd %= 3; /* We only allow 0, 1 or 2 but we don't want to return an error. */
+  ESTREAM_LIST_LOCK;
+  for (list_obj = estream_list; list_obj; list_obj = list_obj->cdr)
+    if (list_obj->car->intern->is_stdstream
+        && list_obj->car->intern->stdstream_fd == fd)
+      {
+	stream = list_obj->car;
+	break;
+      }
+  if (!stream)
+    {
+      /* Standard stream not yet created.  We first try to create them
+         from registered file descriptors.  */
+      if (!fd && custom_std_fds_valid[0])
+        stream = do_fdopen (custom_std_fds[0], "r", 1, 1);
+      else if (fd == 1 && custom_std_fds_valid[1])
+        stream = do_fdopen (custom_std_fds[1], "a", 1, 1);
+      else if (custom_std_fds_valid[2])
+        stream = do_fdopen (custom_std_fds[2], "a", 1, 1);
+
+      if (!stream)
+        {
+          /* Second try is to use the standard C streams.  */
+          if (!fd)
+            stream = do_fpopen (stdin, "r", 1, 1);
+          else if (fd == 1)
+            stream = do_fpopen (stdout, "a", 1, 1);
+          else
+            stream = do_fpopen (stderr, "a", 1, 1);
+        }
+
+      if (!stream)
+        {
+          /* Last try: Create a bit bucket.  */
+          stream = do_fpopen (NULL, fd? "a":"r", 0, 1);
+          if (!stream)
+            {
+              fprintf (stderr, "fatal: error creating a dummy estream"
+                       " for %d: %s\n", fd, strerror (errno));
+              abort();
+            }
+        }
+
+      stream->intern->is_stdstream = 1;
+      stream->intern->stdstream_fd = fd;
+      if (fd == 2)
+        es_set_buffering (stream, NULL, _IOLBF, 0);
+      fname_set_internal (stream,
+                          fd == 0? "[stdin]" :
+                          fd == 1? "[stdout]" : "[stderr]", 0);
+    }
+  ESTREAM_LIST_UNLOCK;
+  return stream;
+}
+
+int
+es_setvbuf (estream_t ES__RESTRICT stream,
+	    char *ES__RESTRICT buf, int type, size_t size)
+{
+  int err;
+
+  if ((type == _IOFBF || type == _IOLBF || type == _IONBF)
+      && (!buf || size || type == _IONBF))
+    {
+      ESTREAM_LOCK (stream);
+      err = es_set_buffering (stream, buf, type, size);
+      ESTREAM_UNLOCK (stream);
+    }
+  else
+    {
+      _set_errno (EINVAL);
+      err = -1;
+    }
+
+  return err;
 }
