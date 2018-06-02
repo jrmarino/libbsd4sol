@@ -61,6 +61,28 @@
 #include <errno.h>
 #include <assert.h>
 
+#ifdef __sun__
+/*
+ * Reverse memchr()
+ * Find the last occurrence of 'c' in the buffer 's' of size 'n'.
+ */
+static void *
+memrchr(const void *s, int c, size_t n)
+{
+        const unsigned char *cp;
+
+        if (n != 0) {
+                cp = (unsigned char *)s + n;
+                do {
+                        if (*(--cp) == (unsigned char)c)
+                                return((void *)cp);
+                } while (--n != 0);
+        }
+        return(NULL);
+}
+#endif
+
+
 /* Generally used types.  */
 
 typedef void *(*func_realloc_t) (void *mem, size_t size);
@@ -74,6 +96,7 @@ typedef void (*func_free_t) (void *mem);
 
 
 /* Locking.  */
+
 typedef void *estream_mutex_t;
 
 static inline void
@@ -176,6 +199,11 @@ static estream_mutex_t estream_list_lock;
 /* File descriptors registered to be used as the standard file handles. */
 static int custom_std_fds[3];
 static unsigned char custom_std_fds_valid[3];
+
+
+/* Local prototypes.  */
+static void fname_set_internal (estream_t stream, const char *fname, int quote);
+
 
 
 /* Macros.  */
@@ -294,6 +322,36 @@ es_list_iterate (estream_iterator_t iterator)
 
 
 /*
+ * I/O Helper
+ */
+
+static void
+es_deinit (void)
+{
+  /* Flush all streams. */
+  es_fflush (NULL);
+}
+
+
+/*
+ * Initialization.
+ */
+
+static int
+es_init_do (void)
+{
+  static int initialized;
+
+  if (!initialized)
+    {
+      initialized = 1;
+      atexit (es_deinit);
+    }
+  return 0;
+}
+
+
+/*
  * I/O methods.
  */
 
@@ -362,6 +420,7 @@ es_func_mem_create (void *ES__RESTRICT *ES__RESTRICT cookie,
 
   return err;
 }
+
 
 /* Read function for memory objects.  */
 static ssize_t
@@ -565,6 +624,7 @@ static es_cookie_io_functions_t estream_functions_mem =
     es_func_mem_destroy
   };
 
+
 /* Implementation of fd I/O.  */
 
 /* Cookie for fd objects.  */
@@ -690,6 +750,7 @@ es_func_fd_destroy (void *cookie)
   return err;
 }
 
+
 static es_cookie_io_functions_t estream_functions_fd =
   {
     es_func_fd_read,
@@ -697,6 +758,7 @@ static es_cookie_io_functions_t estream_functions_fd =
     es_func_fd_seek,
     es_func_fd_destroy
   };
+
 
 
 /* Implementation of FILE* I/O.  */
@@ -831,6 +893,7 @@ static es_cookie_io_functions_t estream_functions_fp =
   };
 
 
+
 /* Implementation of file I/O.  */
 
 /* Create function for file objects.  */
@@ -871,6 +934,7 @@ es_func_file_create (void **cookie, int *filedes,
 
   return err;
 }
+
 
 static int
 es_convert_mode (const char *mode, unsigned int *modeflags)
@@ -916,6 +980,8 @@ es_convert_mode (const char *mode, unsigned int *modeflags)
   *modeflags = (omode | oflags);
   return 0;
 }
+
+
 
 /*
  * Low level stream functionality.
@@ -1188,41 +1254,6 @@ es_destroy (estream_t stream, int with_locked_list)
   return err;
 }
 
-estream_t
-es_fopencookie (void *ES__RESTRICT cookie,
-		const char *ES__RESTRICT mode,
-		es_cookie_io_functions_t functions)
-{
-  unsigned int modeflags;
-  estream_t stream;
-  int err;
-
-  stream = NULL;
-  modeflags = 0;
-
-  err = es_convert_mode (mode, &modeflags);
-  if (err)
-    goto out;
-
-  err = es_create (&stream, cookie, -1, functions, modeflags, 0);
-  if (err)
-    goto out;
-
- out:
-
-  return stream;
-}
-
-int
-es_fclose (estream_t stream)
-{
-  int err;
-
-  err = es_destroy (stream, 0);
-
-  return err;
-}
-
 /* Try to read BYTES_TO_READ bytes FROM STREAM into BUFFER in
    unbuffered-mode, storing the amount of bytes read in
    *BYTES_READ.  */
@@ -1385,21 +1416,59 @@ es_readn (estream_t ES__RESTRICT stream,
   return err;
 }
 
-int
-es_read (estream_t ES__RESTRICT stream,
-	 void *ES__RESTRICT buffer, size_t bytes_to_read,
-	 size_t *ES__RESTRICT bytes_read)
+/* Seek in STREAM.  */
+static int
+es_seek (estream_t ES__RESTRICT stream, off_t offset, int whence,
+	 off_t *ES__RESTRICT offset_new)
 {
-  int err;
+  es_cookie_seek_function_t func_seek = stream->intern->func_seek;
+  int err, ret;
+  off_t off;
 
-  if (bytes_to_read)
+  if (! func_seek)
     {
-      ESTREAM_LOCK (stream);
-      err = es_readn (stream, buffer, bytes_to_read, bytes_read);
-      ESTREAM_UNLOCK (stream);
+      _set_errno (EOPNOTSUPP);
+      err = -1;
+      goto out;
     }
-  else
-    err = 0;
+
+  if (stream->flags.writing)
+    {
+      /* Flush data first in order to prevent flushing it to the wrong
+	 offset.  */
+      err = es_flush (stream);
+      if (err)
+	goto out;
+      stream->flags.writing = 0;
+    }
+
+  off = offset;
+  if (whence == SEEK_CUR)
+    {
+      off = off - stream->data_len + stream->data_offset;
+      off -= stream->unread_data_len;
+    }
+
+  ret = (*func_seek) (stream->intern->cookie, &off, whence);
+  if (ret == -1)
+    {
+      err = -1;
+      goto out;
+    }
+
+  err = 0;
+  es_empty (stream);
+
+  if (offset_new)
+    *offset_new = off;
+
+  stream->intern->indicators.eof = 0;
+  stream->intern->offset = off;
+
+ out:
+
+  if (err)
+    stream->intern->indicators.err = 1;
 
   return err;
 }
@@ -1491,26 +1560,6 @@ es_write_fbf (estream_t ES__RESTRICT stream,
   return err;
 }
 
-#ifdef __sun__
-/*
- * Reverse memchr()
- * Find the last occurrence of 'c' in the buffer 's' of size 'n'.
- */
-static void *
-memrchr(const void *s, int c, size_t n)
-{
-        const unsigned char *cp;
-
-        if (n != 0) {
-                cp = (unsigned char *)s + n;
-                do {
-                        if (*(--cp) == (unsigned char)c)
-                                return((void *)cp);
-                } while (--n != 0);
-        }
-        return(NULL);
-}
-#endif
 
 /* Write BYTES_TO_WRITE bytes from BUFFER into STREAM in
    line-buffered-mode, storing the amount of bytes written in
@@ -1546,63 +1595,6 @@ es_write_lbf (estream_t ES__RESTRICT stream,
   return err;
 }
 
-
-/* Seek in STREAM.  */
-static int
-es_seek (estream_t ES__RESTRICT stream, off_t offset, int whence,
-	 off_t *ES__RESTRICT offset_new)
-{
-  es_cookie_seek_function_t func_seek = stream->intern->func_seek;
-  int err, ret;
-  off_t off;
-
-  if (! func_seek)
-    {
-      _set_errno (EOPNOTSUPP);
-      err = -1;
-      goto out;
-    }
-
-  if (stream->flags.writing)
-    {
-      /* Flush data first in order to prevent flushing it to the wrong
-	 offset.  */
-      err = es_flush (stream);
-      if (err)
-	goto out;
-      stream->flags.writing = 0;
-    }
-
-  off = offset;
-  if (whence == SEEK_CUR)
-    {
-      off = off - stream->data_len + stream->data_offset;
-      off -= stream->unread_data_len;
-    }
-
-  ret = (*func_seek) (stream->intern->cookie, &off, whence);
-  if (ret == -1)
-    {
-      err = -1;
-      goto out;
-    }
-
-  err = 0;
-  es_empty (stream);
-
-  if (offset_new)
-    *offset_new = off;
-
-  stream->intern->indicators.eof = 0;
-  stream->intern->offset = off;
-
- out:
-
-  if (err)
-    stream->intern->indicators.err = 1;
-
-  return err;
-}
 
 /* Write BYTES_TO_WRITE bytes from BUFFER into STREAM in, storing the
    amount of bytes written in BYTES_WRITTEN.  */
@@ -1661,24 +1653,6 @@ es_writen (estream_t ES__RESTRICT stream,
   return err;
 }
 
-int
-es_write (estream_t ES__RESTRICT stream,
-	  const void *ES__RESTRICT buffer, size_t bytes_to_write,
-	  size_t *ES__RESTRICT bytes_written)
-{
-  int err;
-
-  if (bytes_to_write)
-    {
-      ESTREAM_LOCK (stream);
-      err = es_writen (stream, buffer, bytes_to_write, bytes_written);
-      ESTREAM_UNLOCK (stream);
-    }
-  else
-    err = 0;
-
-  return err;
-}
 
 static int
 es_peek (estream_t ES__RESTRICT stream, unsigned char **ES__RESTRICT data,
@@ -1735,11 +1709,6 @@ es_skip (estream_t stream, size_t size)
   return err;
 }
 
-static int
-es_get_fd (estream_t stream)
-{
-  return stream->intern->fd;
-}
 
 static int
 doreadline (estream_t ES__RESTRICT stream, size_t max_length,
@@ -1868,59 +1837,7 @@ doreadline (estream_t ES__RESTRICT stream, size_t max_length,
   return err;
 }
 
-ssize_t
-es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr, size_t *ES__RESTRICT n,
-	    estream_t ES__RESTRICT stream)
-{
-  char *line = NULL;
-  size_t line_n = 0;
-  int err;
 
-  ESTREAM_LOCK (stream);
-  err = doreadline (stream, 0, &line, &line_n);
-  ESTREAM_UNLOCK (stream);
-  if (err)
-    goto out;
-
-  if (*n)
-    {
-      /* Caller wants us to use his buffer.  */
-
-      if (*n < (line_n + 1))
-	{
-	  /* Provided buffer is too small -> resize.  */
-
-	  void *p;
-
-	  p = mem_realloc (*lineptr, line_n + 1);
-	  if (! p)
-	    err = -1;
-	  else
-	    {
-	      if (*lineptr != p)
-		*lineptr = p;
-	    }
-	}
-
-      if (! err)
-	{
-	  memcpy (*lineptr, line, line_n + 1);
-	  if (*n != line_n)
-	    *n = line_n;
-	}
-      mem_free (line);
-    }
-  else
-    {
-      /* Caller wants new buffers.  */
-      *lineptr = line;
-      *n = line_n;
-    }
-
- out:
-
-  return err ? err : (ssize_t)line_n;
-}
 
 static void
 es_set_indicators (estream_t stream, int ind_err, int ind_eof)
@@ -1930,6 +1847,7 @@ es_set_indicators (estream_t stream, int ind_err, int ind_eof)
   if (ind_eof != -1)
     stream->intern->indicators.eof = ind_eof ? 1 : 0;
 }
+
 
 static int
 es_get_indicator (estream_t stream, int ind_err, int ind_eof)
@@ -1943,6 +1861,7 @@ es_get_indicator (estream_t stream, int ind_err, int ind_eof)
 
   return ret;
 }
+
 
 static int
 es_set_buffering (estream_t ES__RESTRICT stream,
@@ -2003,79 +1922,24 @@ es_set_buffering (estream_t ES__RESTRICT stream,
   return err;
 }
 
-int
-es_fileno_unlocked (estream_t stream)
+static int
+es_get_fd (estream_t stream)
 {
-  return es_get_fd (stream);
-}
-
-int
-es_fileno (estream_t stream)
-{
-  int ret;
-
-  ESTREAM_LOCK (stream);
-  ret = es_fileno_unlocked (stream);
-  ESTREAM_UNLOCK (stream);
-
-  return ret;
-}
-
-int
-es_ferror_unlocked (estream_t stream)
-{
-  return es_get_indicator (stream, 1, 0);
+  return stream->intern->fd;
 }
 
 
-int
-es_ferror (estream_t stream)
-{
-  int ret;
 
-  ESTREAM_LOCK (stream);
-  ret = es_ferror_unlocked (stream);
-  ESTREAM_UNLOCK (stream);
-
-  return ret;
-}
+/* API.  */
 
 int
-es_fseeko (estream_t stream, off_t offset, int whence)
+es_init (void)
 {
   int err;
 
-  ESTREAM_LOCK (stream);
-  err = es_seek (stream, offset, whence, NULL);
-  ESTREAM_UNLOCK (stream);
+  err = es_init_do ();
 
   return err;
-}
-
-static void
-fname_set_internal (estream_t stream, const char *fname, int quote)
-{
-  if (stream->intern->printable_fname
-      && !stream->intern->printable_fname_inuse)
-    {
-      mem_free (stream->intern->printable_fname);
-      stream->intern->printable_fname = NULL;
-    }
-  if (stream->intern->printable_fname)
-    return; /* Can't change because it is in use.  */
-
-  if (*fname != '[')
-    quote = 0;
-  else
-    quote = !!quote;
-
-  stream->intern->printable_fname = mem_alloc (strlen (fname) + quote + 1);
-  if (fname)
-    {
-      if (quote)
-        stream->intern->printable_fname[0] = '\\';
-      strcpy (stream->intern->printable_fname+quote, fname);
-    }
 }
 
 estream_t
@@ -2116,6 +1980,34 @@ es_fopen (const char *ES__RESTRICT path, const char *ES__RESTRICT mode)
   return stream;
 }
 
+
+
+estream_t
+es_fopencookie (void *ES__RESTRICT cookie,
+		const char *ES__RESTRICT mode,
+		es_cookie_io_functions_t functions)
+{
+  unsigned int modeflags;
+  estream_t stream;
+  int err;
+
+  stream = NULL;
+  modeflags = 0;
+
+  err = es_convert_mode (mode, &modeflags);
+  if (err)
+    goto out;
+
+  err = es_create (&stream, cookie, -1, functions, modeflags, 0);
+  if (err)
+    goto out;
+
+ out:
+
+  return stream;
+}
+
+
 estream_t
 do_fdopen (int filedes, const char *mode, int no_close, int with_locked_list)
 {
@@ -2155,6 +2047,7 @@ es_fdopen (int filedes, const char *mode)
   return do_fdopen (filedes, mode, 0, 0);
 }
 
+
 estream_t
 do_fpopen (FILE *fp, const char *mode, int no_close, int with_locked_list)
 {
@@ -2189,6 +2082,8 @@ do_fpopen (FILE *fp, const char *mode, int no_close, int with_locked_list)
 
   return stream;
 }
+
+
 
 /* Return the stream used for stdin, stdout or stderr.  */
 estream_t
@@ -2252,6 +2147,283 @@ _es_get_std_stream (int fd)
   return stream;
 }
 
+
+int
+es_fclose (estream_t stream)
+{
+  int err;
+
+  err = es_destroy (stream, 0);
+
+  return err;
+}
+
+
+int
+es_fileno_unlocked (estream_t stream)
+{
+  return es_get_fd (stream);
+}
+
+
+int
+es_fileno (estream_t stream)
+{
+  int ret;
+
+  ESTREAM_LOCK (stream);
+  ret = es_fileno_unlocked (stream);
+  ESTREAM_UNLOCK (stream);
+
+  return ret;
+}
+
+
+
+int
+es_ferror_unlocked (estream_t stream)
+{
+  return es_get_indicator (stream, 1, 0);
+}
+
+
+int
+es_ferror (estream_t stream)
+{
+  int ret;
+
+  ESTREAM_LOCK (stream);
+  ret = es_ferror_unlocked (stream);
+  ESTREAM_UNLOCK (stream);
+
+  return ret;
+}
+
+
+void
+es_clearerr_unlocked (estream_t stream)
+{
+  es_set_indicators (stream, 0, 0);
+}
+
+
+void
+es_clearerr (estream_t stream)
+{
+  ESTREAM_LOCK (stream);
+  es_clearerr_unlocked (stream);
+  ESTREAM_UNLOCK (stream);
+}
+
+
+static int
+do_fflush (estream_t stream)
+{
+  int err;
+
+  if (stream->flags.writing)
+    err = es_flush (stream);
+  else
+    {
+      es_empty (stream);
+      err = 0;
+    }
+
+  return err;
+}
+
+
+int
+es_fflush (estream_t stream)
+{
+  int err;
+
+  if (stream)
+    {
+      ESTREAM_LOCK (stream);
+      err = do_fflush (stream);
+      ESTREAM_UNLOCK (stream);
+    }
+  else
+    err = es_list_iterate (do_fflush);
+
+  return err ? EOF : 0;
+}
+
+
+int
+es_fseek (estream_t stream, long int offset, int whence)
+{
+  int err;
+
+  ESTREAM_LOCK (stream);
+  err = es_seek (stream, offset, whence, NULL);
+  ESTREAM_UNLOCK (stream);
+
+  return err;
+}
+
+
+int
+es_fseeko (estream_t stream, off_t offset, int whence)
+{
+  int err;
+
+  ESTREAM_LOCK (stream);
+  err = es_seek (stream, offset, whence, NULL);
+  ESTREAM_UNLOCK (stream);
+
+  return err;
+}
+
+int
+es_read (estream_t ES__RESTRICT stream,
+	 void *ES__RESTRICT buffer, size_t bytes_to_read,
+	 size_t *ES__RESTRICT bytes_read)
+{
+  int err;
+
+  if (bytes_to_read)
+    {
+      ESTREAM_LOCK (stream);
+      err = es_readn (stream, buffer, bytes_to_read, bytes_read);
+      ESTREAM_UNLOCK (stream);
+    }
+  else
+    err = 0;
+
+  return err;
+}
+
+
+int
+es_write (estream_t ES__RESTRICT stream,
+	  const void *ES__RESTRICT buffer, size_t bytes_to_write,
+	  size_t *ES__RESTRICT bytes_written)
+{
+  int err;
+
+  if (bytes_to_write)
+    {
+      ESTREAM_LOCK (stream);
+      err = es_writen (stream, buffer, bytes_to_write, bytes_written);
+      ESTREAM_UNLOCK (stream);
+    }
+  else
+    err = 0;
+
+  return err;
+}
+
+
+size_t
+es_fread (void *ES__RESTRICT ptr, size_t size, size_t nitems,
+	  estream_t ES__RESTRICT stream)
+{
+  size_t ret, bytes;
+
+  if (size * nitems)
+    {
+      ESTREAM_LOCK (stream);
+      es_readn (stream, ptr, size * nitems, &bytes);
+      ESTREAM_UNLOCK (stream);
+
+      ret = bytes / size;
+    }
+  else
+    ret = 0;
+
+  return ret;
+}
+
+
+size_t
+es_fwrite (const void *ES__RESTRICT ptr, size_t size, size_t nitems,
+	   estream_t ES__RESTRICT stream)
+{
+  size_t ret, bytes;
+
+  if (size * nitems)
+    {
+      ESTREAM_LOCK (stream);
+      es_writen (stream, ptr, size * nitems, &bytes);
+      ESTREAM_UNLOCK (stream);
+
+      ret = bytes / size;
+    }
+  else
+    ret = 0;
+
+  return ret;
+}
+
+
+ssize_t
+es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr, size_t *ES__RESTRICT n,
+	    estream_t ES__RESTRICT stream)
+{
+  char *line = NULL;
+  size_t line_n = 0;
+  int err;
+
+  ESTREAM_LOCK (stream);
+  err = doreadline (stream, 0, &line, &line_n);
+  ESTREAM_UNLOCK (stream);
+  if (err)
+    goto out;
+
+  if (*n)
+    {
+      /* Caller wants us to use his buffer.  */
+
+      if (*n < (line_n + 1))
+	{
+	  /* Provided buffer is too small -> resize.  */
+
+	  void *p;
+
+	  p = mem_realloc (*lineptr, line_n + 1);
+	  if (! p)
+	    err = -1;
+	  else
+	    {
+	      if (*lineptr != p)
+		*lineptr = p;
+	    }
+	}
+
+      if (! err)
+	{
+	  memcpy (*lineptr, line, line_n + 1);
+	  if (*n != line_n)
+	    *n = line_n;
+	}
+      mem_free (line);
+    }
+  else
+    {
+      /* Caller wants new buffers.  */
+      *lineptr = line;
+      *n = line_n;
+    }
+
+ out:
+
+  return err ? err : (ssize_t)line_n;
+}
+
+
+/* Wrapper around free() to match the memory allocation system used
+   by estream.  Should be used for all buffers returned to the caller
+   by libestream. */
+void
+es_free (void *a)
+{
+  mem_free (a);
+}
+
+
+
 int
 es_setvbuf (estream_t ES__RESTRICT stream,
 	    char *ES__RESTRICT buf, int type, size_t size)
@@ -2272,4 +2444,32 @@ es_setvbuf (estream_t ES__RESTRICT stream,
     }
 
   return err;
+}
+
+
+
+static void
+fname_set_internal (estream_t stream, const char *fname, int quote)
+{
+  if (stream->intern->printable_fname
+      && !stream->intern->printable_fname_inuse)
+    {
+      mem_free (stream->intern->printable_fname);
+      stream->intern->printable_fname = NULL;
+    }
+  if (stream->intern->printable_fname)
+    return; /* Can't change because it is in use.  */
+
+  if (*fname != '[')
+    quote = 0;
+  else
+    quote = !!quote;
+
+  stream->intern->printable_fname = mem_alloc (strlen (fname) + quote + 1);
+  if (fname)
+    {
+      if (quote)
+        stream->intern->printable_fname[0] = '\\';
+      strcpy (stream->intern->printable_fname+quote, fname);
+    }
 }

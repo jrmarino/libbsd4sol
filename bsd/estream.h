@@ -119,6 +119,8 @@ typedef struct es_cookie_io_functions_t
 /* The opaque type for an estream.  */
 typedef struct es__stream *estream_t;
 
+int es_init (void);
+
 estream_t es_fopencookie (void *ES__RESTRICT cookie,
 			  const char *ES__RESTRICT mode,
 			  es_cookie_io_functions_t functions);
@@ -131,13 +133,28 @@ estream_t _es_get_std_stream (int fd);
 #define es_stderr _es_get_std_stream (2)
 
 int es_fclose (estream_t stream);
+int es_fseek  (estream_t stream, long int offset, int whence);
 int es_fseeko (estream_t stream, off_t offset, int whence);
 int es_fileno (estream_t stream);
 int es_ferror (estream_t stream);
+int es_fflush (estream_t stream);
+void es_clearerr (estream_t stream);
+void es_clearerr_unlocked (estream_t stream);
 ssize_t es_getline (char *ES__RESTRICT *ES__RESTRICT lineptr,
 		    size_t *ES__RESTRICT n,
 		    estream_t stream);
 int es_setvbuf (estream_t ES__RESTRICT stream,
 		char *ES__RESTRICT buf, int mode, size_t size);
+int es_read      (estream_t ES__RESTRICT stream,
+	          void *ES__RESTRICT buffer, size_t bytes_to_read,
+	          size_t *ES__RESTRICT bytes_read);
+int es_write     (estream_t ES__RESTRICT stream,
+	          const void *ES__RESTRICT buffer, size_t bytes_to_write,
+	          size_t *ES__RESTRICT bytes_written);
+size_t es_fread  (void *ES__RESTRICT ptr, size_t size, size_t nitems,
+		  estream_t ES__RESTRICT stream);
+size_t es_fwrite (const void *ES__RESTRICT ptr, size_t size, size_t memb,
+		  estream_t ES__RESTRICT stream);
+void es_free (void *a);
 
 #endif /*ESTREAM_H*/
