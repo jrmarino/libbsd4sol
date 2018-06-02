@@ -59,7 +59,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <assert.h>
+#include "estream-printf.h"
 
 #ifdef __sun__
 /*
@@ -1838,6 +1840,35 @@ doreadline (estream_t ES__RESTRICT stream, size_t max_length,
 }
 
 
+/* Output fucntion used for estream_format.  */
+static int
+print_writer (void *outfncarg, const char *buf, size_t buflen)
+{
+  estream_t stream = outfncarg;
+  size_t nwritten;
+  int rc;
+
+  nwritten = 0;
+  rc = es_writen (stream, buf, buflen, &nwritten);
+  stream->intern->print_ntotal += nwritten;
+  return rc;
+}
+
+
+/* The core of our printf function.  This is called in locked state. */
+static int
+es_print (estream_t ES__RESTRICT stream,
+	  const char *ES__RESTRICT format, va_list ap)
+{
+  int rc;
+
+  stream->intern->print_ntotal = 0;
+  rc = estream_format (print_writer, stream, format, ap);
+  if (rc)
+    return -1;
+  return (int)stream->intern->print_ntotal;
+}
+
 
 static void
 es_set_indicators (estream_t stream, int ind_err, int ind_eof)
@@ -2422,6 +2453,60 @@ es_free (void *a)
   mem_free (a);
 }
 
+
+int
+es_vfprintf_unlocked (estream_t ES__RESTRICT stream,
+                      const char *ES__RESTRICT format,
+                      va_list ap)
+{
+  return es_print (stream, format, ap);
+}
+
+
+int
+es_vfprintf (estream_t ES__RESTRICT stream, const char *ES__RESTRICT format,
+	     va_list ap)
+{
+  int ret;
+
+  ESTREAM_LOCK (stream);
+  ret = es_print (stream, format, ap);
+  ESTREAM_UNLOCK (stream);
+
+  return ret;
+}
+
+
+int
+es_fprintf_unlocked (estream_t ES__RESTRICT stream,
+                     const char *ES__RESTRICT format, ...)
+{
+  int ret;
+
+  va_list ap;
+  va_start (ap, format);
+  ret = es_print (stream, format, ap);
+  va_end (ap);
+
+  return ret;
+}
+
+
+int
+es_fprintf (estream_t ES__RESTRICT stream,
+	    const char *ES__RESTRICT format, ...)
+{
+  int ret;
+
+  va_list ap;
+  va_start (ap, format);
+  ESTREAM_LOCK (stream);
+  ret = es_print (stream, format, ap);
+  ESTREAM_UNLOCK (stream);
+  va_end (ap);
+
+  return ret;
+}
 
 
 int

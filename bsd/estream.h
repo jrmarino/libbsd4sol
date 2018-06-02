@@ -60,6 +60,7 @@
 #include <stdio.h>
 
 #define ES__RESTRICT __restrict__
+#define _ESTREAM_GCC_A_PRINTF( f, a )  __attribute__ ((format (printf,f,a)))
 
 /* Forward declaration for the (opaque) internal type.  */
 struct estream_internal;
@@ -157,4 +158,17 @@ size_t es_fwrite (const void *ES__RESTRICT ptr, size_t size, size_t memb,
 		  estream_t ES__RESTRICT stream);
 void es_free (void *a);
 
+int es_fprintf (estream_t ES__RESTRICT stream,
+		const char *ES__RESTRICT format, ...)
+     _ESTREAM_GCC_A_PRINTF(2,3);
+int es_fprintf_unlocked (estream_t ES__RESTRICT stream,
+                         const char *ES__RESTRICT format, ...)
+     _ESTREAM_GCC_A_PRINTF(2,3);
+
+int es_vfprintf (estream_t ES__RESTRICT stream,
+		 const char *ES__RESTRICT format, va_list ap)
+     _ESTREAM_GCC_A_PRINTF(2,0);
+int es_vfprintf_unlocked (estream_t ES__RESTRICT stream,
+                          const char *ES__RESTRICT format, va_list ap)
+     _ESTREAM_GCC_A_PRINTF(2,0);
 #endif /*ESTREAM_H*/
