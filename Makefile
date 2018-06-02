@@ -33,7 +33,7 @@ SRCS=		err.c stringlist.c strsep.c bzero.c reallocarray.c vis.c \
 		arc4random.c arc4random_uniform.c explicit_bzero.c \
 		strcasestr.c getentropy_solaris.c sha512c.c reallocf.c \
 		strtonum.c fgetln.c asprintf.c vasprintf.c strnlen.c \
-		strnstr.c estream.c
+		strnstr.c estream.c estream-printf.c
 
 # libexec sources
 PREFIX?=	/usr/local
